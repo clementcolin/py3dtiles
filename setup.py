@@ -17,7 +17,8 @@ requirements = (
     'pyproj',
     'psutil',
     'lz4',
-    'pyzmq'
+    'pyzmq',
+    'jsonschema'
 )
 
 dev_requirements = (
@@ -80,5 +81,24 @@ setup(
     entry_points={
         'console_scripts': ['py3dtiles=py3dtiles.command_line:main'],
     },
+    data_files=[('py3dtiles/jsonschemas',
+                   [ 'py3dtiles/jsonschemas/3DTILES_batch_table_hierarchy.json',
+                     'py3dtiles/jsonschemas/3DTILES_temporal.batchTable.schema.json',
+                     'py3dtiles/jsonschemas/3DTILES_temporal.boundingVolume.schema.json',
+                     'py3dtiles/jsonschemas/3DTILES_temporal.tileset.schema.json',
+                     'py3dtiles/jsonschemas/3DTILES_temporal.transaction.schema.json',
+                     'py3dtiles/jsonschemas/3DTILES_temporal.primaryTransaction.schema.json',
+                     'py3dtiles/jsonschemas/3DTILES_temporal.transactionAggregate.schema.json',
+                     'py3dtiles/jsonschemas/3DTILES_temporal.version.schema.json',
+                     'py3dtiles/jsonschemas/3DTILES_temporal.versionTransition.schema.json',
+                     'py3dtiles/jsonschemas/batchTable.schema.json',
+                     'py3dtiles/jsonschemas/boundingVolume.schema.json',
+                     'py3dtiles/jsonschemas/extension.schema.json',
+                     'py3dtiles/jsonschemas/extras.schema.json',
+                     'py3dtiles/jsonschemas/properties.schema.json',
+                     'py3dtiles/jsonschemas/tile.schema.json',
+                     'py3dtiles/jsonschemas/tile.content.schema.json',
+                     'py3dtiles/jsonschemas/tileset.schema.json' ]
+                )], 
     zip_safe=False  # zip packaging conflicts with Numba cache (#25)
 )

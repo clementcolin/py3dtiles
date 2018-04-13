@@ -43,10 +43,10 @@ class TestTileBuilder(unittest.TestCase):
             newf = Feature.from_array(pdt, pos)
             features.append(newf)
 
-        # create a tile
+        # create a TileContent
         t = Pnts.from_features(pdt, None, features)
 
-        # configure the tile
+        # configure the TileContent
         rtc = [1215012.8828876738, -4736313.051199594, 4081605.22126042]
         t.body.feature_table.header.rtc = rtc
 
@@ -86,10 +86,10 @@ class TestTileBuilder(unittest.TestCase):
             newf = Feature.from_array(pdt, pos, cdt, col)
             features.append(newf)
 
-        # create a tile
+        # create a TileContent
         t = Pnts.from_features(pdt, cdt, features)
 
-        # configure the tile
+        # configure the TileContent
         rtc = [1215012.8828876738, -4736313.051199594, 4081605.22126042]
         t.body.feature_table.header.rtc = rtc
 
