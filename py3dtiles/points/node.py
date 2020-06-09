@@ -3,7 +3,7 @@ from pickle import dumps as pdumps, loads as ploads
 import os
 import json
 
-from py3dtiles import TileReader
+from py3dtiles import TileContentReader
 from py3dtiles.feature_table import SemanticPoint
 from py3dtiles.points.utils import name_to_filename, node_from_name, SubdivisionType, aabb_size_to_subdivision_type
 from py3dtiles.points.points_grid import Grid
@@ -93,7 +93,6 @@ class Node(object):
         if self.children is not None:
             return self.grid.needs_balance()
         return False
-
 
     def flush_pending_points(self, catalog, scale):
         for name, xyz, rgb in self._get_pending_points():
@@ -195,7 +194,7 @@ class Node(object):
         #   - computing the real AABB (instead of the one based on the octree)
         #   - merging this tile's small (<100 points) children
         if os.path.exists(ondisk_tile):
-            tile = TileReader().read_file(ondisk_tile)
+            tile = TileContentReader.read_file(ondisk_tile)
             fth = tile.body.feature_table.header
             xyz = tile.body.feature_table.body.positions_arr
             if fth.colors != SemanticPoint.NONE:
@@ -223,7 +222,7 @@ class Node(object):
                 # See if we should merge this child in tile
                 if xyz is not None:
                     # Read pnts content
-                    tile = TileReader().read_file(child_ondisk_tile)
+                    tile = TileContentReader.read_file(child_ondisk_tile)
                     fth = tile.body.feature_table.header
 
                     # If this child is small enough, merge in the current tile
@@ -275,7 +274,7 @@ class Node(object):
         if executor is not None:
             children = [t for t in executor.map(node_to_tileset, children)]
 
-        if children:
+        if children is not None:
             tileset['children'] = children
         else:
             tileset['geometricError'] = 0.0

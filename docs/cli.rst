@@ -4,7 +4,7 @@ Command line usage
 info
 ~~~~
 
-Here is an example on how to retrieve basic information about a tile, in this
+Here is an example on how to retrieve basic information about a tile binary content, in this
 case *pointCloudRGB.pnts*:
 
 .. code-block:: shell
@@ -72,8 +72,8 @@ correctly placed. Usage example:
 
 The database export requires a user name, a database name, the name of the table
 and its column that contains the geometry and (optionaly) the name of the column
-that contains the object's ID. Usage example:
+that contains the object's ID and the host and port. Usage example:
 
 .. code-block:: shell
 
-    $ export_tileset -D database -t my_city -c geom -i id -u oslandia
+    $ py3dtiles export -t table -D database -c geometry_column -i id -u oslandia -H localhost -P 5432

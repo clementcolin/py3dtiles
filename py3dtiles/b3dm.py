@@ -1,13 +1,13 @@
-# -*- coding: utf-8 -*-
+# coding: utf-8
 import struct
 import numpy as np
 
-from .tile import Tile, TileHeader, TileBody, TileType
+from .tile import TileContent, TileHeader, TileBody, TileType
 from .gltf import GlTF
 from .batch_table import BatchTable
 
 
-class B3dm(Tile):
+class B3dm(TileContent):
 
     @staticmethod
     def from_glTF(gltf, bt=None):
@@ -22,7 +22,7 @@ class B3dm(Tile):
 
         Returns
         -------
-        tile : Tile
+        tile : TileContent
         """
 
         tb = B3dmBody()
@@ -32,7 +32,7 @@ class B3dm(Tile):
         th = B3dmHeader()
         th.sync(tb)
 
-        t = Tile()
+        t = TileContent()
         t.body = tb
         t.header = th
 
@@ -47,7 +47,7 @@ class B3dm(Tile):
 
         Returns
         -------
-        t : Tile
+        t : TileContent
         """
 
         # build tile header
@@ -62,8 +62,8 @@ class B3dm(Tile):
                  - B3dmHeader.BYTELENGTH])
         b = B3dmBody.from_array(h, b_arr)
 
-        # build Tile with header and body
-        t = Tile()
+        # build TileContent with header and body
+        t = TileContent()
         t.header = h
         t.body = b
 
@@ -205,13 +205,13 @@ class B3dmBody(TileBody):
 
         # build batch table
         bt_len = th.bt_json_byte_length + th.bt_bin_byte_length
-        # bt_arr = array[ft_len:ft_len+bt_len]
+        # bt_arr = array[ft_len:ft_len + bt_len]
         # bt = BatchTable.from_array(th, bt_arr)
 
         # build glTF
         glTF_len = (th.tile_byte_length - ft_len - bt_len
                     - B3dmHeader.BYTELENGTH)
-        glTF_arr = array[ft_len+bt_len:ft_len+bt_len+glTF_len]
+        glTF_arr = array[ft_len + bt_len:ft_len + bt_len + glTF_len]
         glTF = GlTF.from_array(glTF_arr)
 
         # build tile body with feature table

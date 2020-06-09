@@ -1,19 +1,21 @@
 sudo: required
-dist: trusty
+dist: bionic
 
 language: python
 python:
-  - "3.5"
+  - "3.6"
 
 before_install:
-  - sudo apt-get install -y liblas-c3 libopenblas-base
+  - sudo add-apt-repository universe
+  - sudo apt-get install -y liblas-c3 libopenblas-base flake8
 
 install:
   - pip install -e .
-  - pip install pytest pytest-benchmark
+  - pip install -e .[dev]
 
 script:
   - pytest
+  - flake8 setup.py py3dtiles/
   - py3dtiles info tests/pointCloudRGB.pnts
 
 addons:

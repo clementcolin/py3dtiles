@@ -1,7 +1,6 @@
 #! /usr/bin/env python
 # -*- coding: utf-8 -*-
 
-import argparse
 import psycopg2
 import getpass
 import math
@@ -19,14 +18,14 @@ class BoundingBox():
 
     def inside(self, point):
         return ((self.min[0] <= point[0] < self.max[0])
-            and (self.min[1] <= point[1] < self.max[1]))
+                and (self.min[1] <= point[1] < self.max[1]))
 
     def center(self):
-        return [(i + j) / 2 for (i,j) in zip(self.min, self.max)]
+        return [(i + j) / 2 for (i, j) in zip(self.min, self.max)]
 
     def add(self, box):
-        self.min = [min(i,j) for (i,j) in zip(self.min, box.min)]
-        self.max = [max(i,j) for (i,j) in zip(self.max, box.max)]
+        self.min = [min(i, j) for (i, j) in zip(self.min, box.min)]
+        self.max = [max(i, j) for (i, j) in zip(self.max, box.max)]
 
 
 class Feature():
@@ -230,14 +229,14 @@ def wkbs2tileset(wkbs, ids, transform):
     arrays2tileset(positions, normals, bboxes, transform, ids)
 
 
-def from_db(db_name, table_name, column_name, id_column_name, user_name):
+def from_db(db_name, table_name, column_name, id_column_name, user_name, host=None, port=None):
     user = getpass.getuser() if user_name is None else user_name
 
     try:
-        connection = psycopg2.connect(dbname=db_name, user=user)
+        connection = psycopg2.connect(dbname=db_name, user=user, host=host, port=port)
     except psycopg2.OperationalError:
         pw = getpass.getpass("Postgres password for user {}\n".format(user))
-        connection = psycopg2.connect(dbname=db_name, user=user, password=pw)
+        connection = psycopg2.connect(dbname=db_name, user=user, password=pw, host=host, port=port)
 
     cur = connection.cursor()
 
@@ -273,7 +272,7 @@ def from_db(db_name, table_name, column_name, id_column_name, user_name):
 
 def from_directory(directory, offset):
     # TODO: improvement -> order wkbs by geometry size, similarly to database mode
-    offset = (0,0,0) if offset is None else offset
+    offset = (0, 0, 0) if offset is None else offset
     # open all wkbs from directory
     files = os.listdir(directory)
     files = [os.path.join(directory, f) for f in os.listdir(directory)]
@@ -319,6 +318,12 @@ def init_parser(subparser, str2bool):
     u_help = 'database user name'
     parser.add_argument('-u', metavar='USER', type=str, help=u_help)
 
+    H_help = 'database host'
+    parser.add_argument('-H', metavar='HOST', type=str, help=H_help)
+
+    P_help = 'database port'
+    parser.add_argument('-P', metavar='PORT', type=int, help=P_help)
+
 
 def main(args):
     if args.D is not None:
@@ -326,7 +331,7 @@ def main(args):
             print('Error: please define a table (-t) and column (-c)')
             exit()
 
-        from_db(args.D, args.t, args.c, args.i, args.u)
+        from_db(args.D, args.t, args.c, args.i, args.u, args.H, args.P)
     elif args.d is not None:
         from_directory(args.d, args.o)
     else:

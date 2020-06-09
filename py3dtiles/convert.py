@@ -16,11 +16,19 @@ import argparse
 from py3dtiles.points.transformations import rotation_matrix, angle_between_vectors, vector_product, inverse_matrix, scale_matrix, translation_matrix
 from py3dtiles.points.utils import compute_spacing, name_to_filename
 from py3dtiles.points.node import Node
-from py3dtiles import TileReader
+from py3dtiles import TileContentReader
 from py3dtiles.points.shared_node_store import SharedNodeStore
 import py3dtiles.points.task.las_reader as las_reader
+import py3dtiles.points.task.xyz_reader as xyz_reader
 import py3dtiles.points.task.node_process as node_process
 import py3dtiles.points.task.pnts_writer as pnts_writer
+
+
+total_memory_MB = int(psutil.virtual_memory().total / (1024 * 1024))
+
+
+class SrsInMissingException(Exception):
+    pass
 
 
 def write_tileset(in_folder, out_folder, octree_metadata, offset, scale, projection, rotation_matrix, include_rgb):
@@ -40,12 +48,11 @@ def write_tileset(in_folder, out_folder, octree_metadata, offset, scale, project
         for child in ['0', '1', '2', '3', '4', '5', '6', '7']:
             ondisk_tile = name_to_filename(out_folder, child.encode('ascii'), '.pnts')
             if os.path.exists(ondisk_tile):
-                tile = TileReader().read_file(ondisk_tile)
-                th = tile.header
-                fth = tile.body.feature_table.header
-                xyz = tile.body.feature_table.body.positions_arr.view(np.float32).reshape((fth.points_length, 3))
+                tile_content = TileContentReader.read_file(ondisk_tile)
+                fth = tile_content.body.feature_table.header
+                xyz = tile_content.body.feature_table.body.positions_arr.view(np.float32).reshape((fth.points_length, 3))
                 if include_rgb:
-                    rgb = tile.body.feature_table.body.colors_arr.reshape((fth.points_length, 3))
+                    rgb = tile_content.body.feature_table.body.colors_arr.reshape((fth.points_length, 3))
                 else:
                     rgb = np.zeros(xyz.shape, dtype=np.uint8)
 
@@ -129,7 +136,9 @@ def zmq_process(activity_graph, projection, node_store, octree_metadata, folder,
                 # ack
                 break
 
-            las_reader.run(
+            _, ext = os.path.splitext(command['filename'])
+            init_reader_fn = las_reader.run if ext == '.las' else xyz_reader.run
+            init_reader_fn(
                 command['id'],
                 command['filename'],
                 command['offset_scale'],
@@ -195,19 +204,19 @@ def is_ancestor_in_list(ln, node_name, d):
 def can_pnts_be_written(name, finished_node, input_nodes, active_nodes):
     ln = len(name)
     return (
-        is_ancestor(ln, len(finished_node), name, finished_node) and
-        not is_ancestor_in_list(ln, name, active_nodes) and
-        not is_ancestor_in_list(ln, name, input_nodes))
+        is_ancestor(ln, len(finished_node), name, finished_node)
+        and not is_ancestor_in_list(ln, name, active_nodes)
+        and not is_ancestor_in_list(ln, name, input_nodes))
 
 
-LasReader = namedtuple('LasReader', ['input', 'active'])
+Reader = namedtuple('Reader', ['input', 'active'])
 NodeProcess = namedtuple('NodeProcess', ['input', 'active', 'inactive'])
 ToPnts = namedtuple('ToPnts', ['input', 'active'])
 
 
 class State():
     def __init__(self, pointcloud_file_portions):
-        self.las_reader = LasReader(input=pointcloud_file_portions, active=[])
+        self.reader = Reader(input=pointcloud_file_portions, active=[])
         self.node_process = NodeProcess(input={}, active={}, inactive=[])
         self.to_pnts = ToPnts(input=[], active=[])
 
@@ -215,8 +224,8 @@ class State():
         print('{:^16}|{:^8}|{:^8}|{:^8}'.format('Step', 'Input', 'Active', 'Inactive'))
         print('{:^16}|{:^8}|{:^8}|{:^8}'.format(
             'LAS reader',
-            len(self.las_reader.input),
-            len(self.las_reader.active),
+            len(self.reader.input),
+            len(self.reader.active),
             ''))
         print('{:^16}|{:^8}|{:^8}|{:^8}'.format(
             'Node process',
@@ -235,7 +244,6 @@ def can_queue_more_jobs(idles):
 
 
 def init_parser(subparser, str2bool):
-    total_memory_MB = int(psutil.virtual_memory().total / (1024 * 1024))
 
     parser = subparser.add_parser(
         'convert',
@@ -244,7 +252,7 @@ def init_parser(subparser, str2bool):
     parser.add_argument(
         'files',
         nargs='+',
-        help='Filenames to process. The file must use the .las format.')
+        help='Filenames to process. The file must use the .las or .xyz format.')
     parser.add_argument(
         '--out',
         type=str,
@@ -252,23 +260,23 @@ def init_parser(subparser, str2bool):
         default='./3dtiles')
     parser.add_argument(
         '--overwrite',
-        help='Overwrite the ouput folder if it already exists.',
+        help='Delete and recreate the ouput folder if it already exists. WARNING: be careful, there will be no confirmation!',
         default=False,
         type=str2bool)
     parser.add_argument(
         '--jobs',
-        help='The number of parallel jobs to start.',
+        help='The number of parallel jobs to start. Default to the number of cpu.',
         default=multiprocessing.cpu_count(),
         type=int)
     parser.add_argument(
         '--cache_size',
-        help='Cache size in MB',
+        help='Cache size in MB. Default to available memory / 10.',
         default=int(total_memory_MB / 10),
         type=int)
     parser.add_argument(
-        '--srs_out', help='SRS to use as output (EPSG code)', type=str)
+        '--srs_out', help='SRS to convert the output with (numeric part of the EPSG code)', type=str)
     parser.add_argument(
-        '--srs_in', help='Override input SRS (EPSG code)', type=str)
+        '--srs_in', help='Override input SRS (numeric part of the EPSG code)', type=str)
     parser.add_argument(
         '--fraction',
         help='Percentage of the pointcloud to process.',
@@ -288,35 +296,92 @@ def init_parser(subparser, str2bool):
 
 
 def main(args):
-    folder = args.out
+    try:
+        return convert(args.files,
+                       outfolder=args.out,
+                       overwrite=args.overwrite,
+                       jobs=args.jobs,
+                       cache_size=args.cache_size,
+                       srs_out=args.srs_out,
+                       srs_in=args.srs_in,
+                       fraction=args.fraction,
+                       benchmark=args.benchmark,
+                       rgb=args.rgb,
+                       graph=args.graph,
+                       color_scale=args.color_scale,
+                       verbose=args.verbose)
+    except SrsInMissingException:
+        print('No SRS information in input files, you should specify it with --srs_in')
+        sys.exit(1)
 
-    # create folder
-    if os.path.isdir(folder):
-        if args.overwrite:
-            shutil.rmtree(folder)
-        else:
-            print('Error, folder \'{}\' already exists'.format(folder))
-            sys.exit(1)
 
-    os.makedirs(folder)
-    working_dir = folder + '/tmp'
-    os.makedirs(working_dir)
+def convert(files,
+            outfolder='./3dtiles',
+            overwrite=False,
+            jobs=multiprocessing.cpu_count(),
+            cache_size=int(total_memory_MB / 10),
+            srs_out=None,
+            srs_in=None,
+            fraction=100,
+            benchmark=None,
+            rgb=True,
+            graph=False,
+            color_scale=None,
+            verbose=False):
+    """convert
 
-    node_store = SharedNodeStore(working_dir)
+    Convert pointclouds (xyz or las) to 3dtiles tileset containing pnts node
+
+    :param files: Filenames to process. The file must use the .las or .xyz format.
+    :type files: list of str, or str
+    :param outfolder: The folder where the resulting tileset will be written.
+    :type outfolder: path-like object
+    :param overwrite: Overwrite the ouput folder if it already exists.
+    :type overwrite: bool
+    :param jobs: The number of parallel jobs to start. Default to the number of cpu.
+    :type jobs: int
+    :param cache_size: Cache size in MB. Default to available memory / 10.
+    :type cache_size: int
+    :param srs_out: SRS to convert the output with (numeric part of the EPSG code)
+    :type srs_out: int or str
+    :param srs_in: Override input SRS (numeric part of the EPSG code)
+    :type srs_in: int or str
+    :param fraction: Percentage of the pointcloud to process, between 0 and 100.
+    :type fraction: int
+    :param benchmark: Print summary at the end of the process
+    :type benchmark: str
+    :param rgb: Export rgb attributes.
+    :type rgb: bool
+    :param graph: Produce debug graphes (requires pygal).
+    :type graph: bool
+    :param color_scale: Force color scale
+    :type color_scale: float
+
+    :raises SrsInMissingException: if py3dtiles couldn't find srs informations in input files and srs_in is not specified
+
+
+    """
+
+    # allow str directly if only one input
+    files = [files] if isinstance(files, str) else files
 
     # read all input files headers and determine the aabb/spacing
-    infos = las_reader.init(args)
+    _, ext = os.path.splitext(files[0])
+    init_reader_fn = las_reader.init if ext == '.las' else xyz_reader.init
+    infos = init_reader_fn(files, color_scale=color_scale, srs_in=srs_in)
 
     avg_min = infos['avg_min']
     rotation_matrix = None
     # srs stuff
     projection = None
-    if args.srs_out is not None:
-        p2 = pyproj.Proj(init='epsg:{}'.format(args.srs_out))
-        if args.srs_in is not None:
-            p1 = pyproj.Proj(init='epsg:{}'.format(args.srs_in))
+    if srs_out is not None:
+        p2 = pyproj.Proj(init='epsg:{}'.format(srs_out))
+        if srs_in is not None:
+            p1 = pyproj.Proj(init='epsg:{}'.format(srs_in))
         else:
             p1 = infos['srs_in']
+        if srs_in is None:
+            raise SrsInMissingException('No SRS informations in the provided files')
         projection = [p1, p2]
 
         bl = np.array(list(pyproj.transform(
@@ -338,7 +403,7 @@ def main(args):
         bl = bl - avg_min
         tr = tr - avg_min
 
-        if args.srs_out == '4978':
+        if srs_out == '4978':
             # Transform geocentric normal => (0, 0, 1)
             # and 4978-bbox x axis => (1, 0, 0),
             # to have a bbox in local coordinates that's nicely aligned with the data
@@ -367,26 +432,41 @@ def main(args):
         elif base_spacing > 1:
             root_scale = np.array([0.1, 0.1, 0.1])
         else:
-            root_scale = np.array([1.0, 1.0, 1.0])
+            root_scale = np.array([1, 1, 1])
 
     root_aabb = root_aabb * root_scale
     root_spacing = compute_spacing(root_aabb)
 
     octree_metadata = OctreeMetadata(aabb=root_aabb, spacing=root_spacing, scale=root_scale[0])
 
-    if args.verbose >= 1:
+    # create folder
+    if os.path.isdir(outfolder):
+        if overwrite:
+            shutil.rmtree(outfolder, ignore_errors=True)
+        else:
+            print('Error, folder \'{}\' already exists'.format(outfolder))
+            sys.exit(1)
+
+    os.makedirs(outfolder)
+    working_dir = os.path.join(outfolder, 'tmp')
+    os.makedirs(working_dir)
+
+    node_store = SharedNodeStore(working_dir)
+
+    if verbose >= 1:
         print('Summary:')
         print('  - points to process: {}'.format(infos['point_count']))
         print('  - offset to use: {}'.format(avg_min))
         print('  - root spacing: {}'.format(root_spacing / root_scale[0]))
         print('  - root aabb: {}'.format(root_aabb))
         print('  - original aabb: {}'.format(original_aabb))
+        print('  - scale: {}'.format(root_scale))
 
     startup = time.time()
 
     initial_portion_count = len(infos['portions'])
 
-    if args.graph:
+    if graph:
         progression_log = open('progression.csv', 'w')
 
     def add_tasks_to_process(state, name, task, point_count):
@@ -404,7 +484,7 @@ def main(args):
     previous_percent = 0
     points_in_pnts = 0
 
-    max_splitting_jobs_count = max(1, args.jobs // 2)
+    max_splitting_jobs_count = max(1, jobs // 2)
 
     # zmq setup
     context = zmq.Context()
@@ -421,7 +501,7 @@ def main(args):
     zmq_processes = [multiprocessing.Process(
         target=zmq_process,
         args=(
-            args.graph, projection, node_store, octree_metadata, folder, args.rgb, args.verbose)) for i in range(args.jobs)]
+            graph, projection, node_store, octree_metadata, outfolder, rgb, verbose)) for i in range(jobs)]
 
     for p in zmq_processes:
         p.start()
@@ -464,14 +544,14 @@ def main(args):
                         node_store.put(result['name'], result['save'])
 
                     if result['name'][0:4] == b'root':
-                        state.las_reader.active.remove(result['name'])
+                        state.reader.active.remove(result['name'])
                     else:
                         del state.node_process.active[result['name']]
 
                         if len(result['name']) > 0:
                             state.node_process.inactive.append(result['name'])
 
-                            if not state.las_reader.input and not state.las_reader.active:
+                            if not state.reader.input and not state.reader.active:
                                 if state.node_process.active or state.node_process.input:
                                     finished_node = result['name']
                                     if not can_pnts_be_written(
@@ -507,7 +587,6 @@ def main(args):
                 count = struct.unpack('>I', result[2])[0]
                 add_tasks_to_process(state, result[0], result[1], count)
 
-
         while state.to_pnts.input and can_queue_more_jobs(zmq_idle_clients):
             node_name = state.to_pnts.input.pop()
             datas = node_store.get(node_name)
@@ -515,7 +594,6 @@ def main(args):
             zmq_send_to_process(zmq_idle_clients, zmq_skt, [b'pnts', node_name, datas])
             node_store.remove(node_name)
             state.to_pnts.active.append(node_name)
-
 
         if can_queue_more_jobs(zmq_idle_clients):
             potential = sorted(
@@ -546,51 +624,51 @@ def main(args):
                 if job_list:
                     zmq_send_to_process(zmq_idle_clients, zmq_skt, job_list)
 
-        while (state.las_reader.input and
-           (points_in_progress < 60000000 or not state.las_reader.active) and
-           len(state.las_reader.active) < max_splitting_jobs_count and
-           can_queue_more_jobs(zmq_idle_clients)):
-            if args.verbose >= 1:
-                print('Submit next portion {}'.format(state.las_reader.input[-1]))
-            _id = 'root_{}'.format(len(state.las_reader.input)).encode('ascii')
-            file, portion = state.las_reader.input.pop()
+        while (state.reader.input
+               and (points_in_progress < 60000000 or not state.reader.active)
+               and len(state.reader.active) < max_splitting_jobs_count
+               and can_queue_more_jobs(zmq_idle_clients)):
+            if verbose >= 1:
+                print('Submit next portion {}'.format(state.reader.input[-1]))
+            _id = 'root_{}'.format(len(state.reader.input)).encode('ascii')
+            file, portion = state.reader.input.pop()
             points_in_progress += portion[1] - portion[0]
 
             zmq_send_to_process(zmq_idle_clients, zmq_skt, [pickle.dumps({
                 'filename': file,
-                'offset_scale': (-avg_min, root_scale, rotation_matrix[:3,:3].T if rotation_matrix is not None else None, infos['color_scale']),
+                'offset_scale': (-avg_min, root_scale, rotation_matrix[:3, :3].T if rotation_matrix is not None else None, infos['color_scale']),
                 'portion': portion,
                 'id': _id
-                })])
+            })])
 
-            state.las_reader.active.append(_id)
+            state.reader.active.append(_id)
 
         # if at this point we have no work in progress => we're done
-        if len(zmq_idle_clients) == args.jobs or zmq_processes_killed == args.jobs:
+        if len(zmq_idle_clients) == jobs or zmq_processes_killed == jobs:
             if zmq_processes_killed < 0:
                 zmq_send_to_all_process(zmq_idle_clients, zmq_skt, [pickle.dumps(b'shutdown')])
                 zmq_processes_killed = 0
             else:
                 assert points_in_pnts == infos['point_count'], '!!! Invalid point count in the written .pnts (expected: {}, was: {})'.format(
-                        infos['point_count'], points_in_pnts)
-                if args.verbose >= 1:
+                    infos['point_count'], points_in_pnts)
+                if verbose >= 1:
                     print('Writing 3dtiles {}'.format(infos['avg_min']))
                 write_tileset(working_dir,
-                              folder,
+                              outfolder,
                               octree_metadata,
                               avg_min,
                               root_scale,
                               projection,
                               rotation_matrix,
-                              args.rgb)
+                              rgb)
                 shutil.rmtree(working_dir)
-                if args.verbose >= 1:
+                if verbose >= 1:
                     print('Done')
 
-                if args.benchmark is not None:
+                if benchmark is not None:
                     print('{},{},{},{}'.format(
-                        args.benchmark,
-                        ','.join([os.path.basename(f) for f in args.files]),
+                        benchmark,
+                        ','.join([os.path.basename(f) for f in files]),
                         points_in_pnts,
                         round(time.time() - startup, 1)))
 
@@ -599,7 +677,7 @@ def main(args):
                 break
 
         if at_least_one_job_ended:
-            if args.verbose >= 3:
+            if verbose >= 3:
                 print('{:^16}|{:^8}|{:^8}'.format('Name', 'Points', 'Seconds'))
                 for name, v in state.node_process.active.items():
                     print('{:^16}|{:^8}|{:^8}'.format(
@@ -609,22 +687,22 @@ def main(args):
                 print('')
                 print('Pending:')
                 print('  - root: {} / {}'.format(
-                    len(state.las_reader.input),
+                    len(state.reader.input),
                     initial_portion_count))
                 print('  - other: {} files for {} nodes'.format(
                     sum([len(f[0]) for f in state.node_process.input.values()]),
                     len(state.node_process.input)))
                 print('')
-            elif args.verbose >= 2:
+            elif verbose >= 2:
                 state.print_debug()
-            if args.verbose >= 1:
+            if verbose >= 1:
                 print('{} % points in {} sec [{} tasks, {} nodes, {} wip]'.format(
                     round(100 * processed_points / infos['point_count'], 2),
                     round(now, 1),
-                    args.jobs - len(zmq_idle_clients),
+                    jobs - len(zmq_idle_clients),
                     len(state.node_process.active),
                     points_in_progress))
-            elif args.verbose >= 0:
+            elif verbose >= 0:
                 percent = round(100 * processed_points / infos['point_count'], 2)
                 time_left = (100 - percent) * now / (percent + 0.001)
                 print('\r{:>6} % in {} sec [est. time left: {} sec]'.format(percent, round(now), round(time_left)), end='', flush=True)
@@ -632,24 +710,23 @@ def main(args):
                     print('')
                     previous_percent = int(percent)
 
-            if args.graph:
+            if graph:
                 percent = round(100 * processed_points / infos['point_count'], 3)
                 print('{}, {}'.format(time.time() - startup, percent), file=progression_log)
 
-        node_store.control_memory_usage(args.cache_size, args.verbose)
+        node_store.control_memory_usage(cache_size, verbose)
 
-    if args.verbose >= 1:
+    if verbose >= 1:
         print('destroy', round(time_waiting_an_idle_process, 2))
 
-    if args.graph:
+    if graph:
         progression_log.close()
 
     # pygal chart
-    if args.graph:
+    if graph:
         import pygal
-        from datetime import timedelta
 
-        dateline = pygal.XY(x_label_rotation=25, secondary_range=(0, 100)) #, show_y_guides=False)
+        dateline = pygal.XY(x_label_rotation=25, secondary_range=(0, 100))  # , show_y_guides=False)
         for pid in activities:
             activity = []
             filename = 'activity.{}.csv'.format(pid)
@@ -677,13 +754,12 @@ def main(args):
                     line = line.split(',')
                     values += [(float(line[0]), float(line[1]))]
         os.remove('progression.csv')
-        dateline.add('progression', values, show_dots=False, secondary=True, stroke_style={'width':2, 'color': 'black'})
-
+        dateline.add('progression', values, show_dots=False, secondary=True, stroke_style={'width': 2, 'color': 'black'})
 
         dateline.render_to_file('activity.svg')
 
     context.destroy()
 
+
 if __name__ == '__main__':
     main()
-

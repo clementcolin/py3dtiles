@@ -32,9 +32,6 @@ doc_requirements = (
     'sphinx_rtd_theme',
 )
 
-prod_requirements = (
-)
-
 
 def read(fname):
     return open(os.path.join(os.path.dirname(__file__), fname)).read()
@@ -78,7 +75,6 @@ setup(
     test_suite="tests",
     extras_require={
         'dev': dev_requirements,
-        'prod': prod_requirements,
         'doc': doc_requirements
     },
     entry_points={
