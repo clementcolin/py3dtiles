@@ -34,8 +34,8 @@ This command should produce a directory named "ifc_tileset".
 
 - Support only IFC4 :
     - needs to support IFC2XC3 : 
-            - test the file version
-            - change the geometry access 
+      - test the file version
+      - change the geometry access 
 
 - Support the following geometry types, ignore other types : 
     - MappedRepresentation
